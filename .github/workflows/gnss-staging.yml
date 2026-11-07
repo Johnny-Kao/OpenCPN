@@ -7,6 +7,39 @@ on:
 permissions:
   contents: read
 jobs:
+  unmodified-upstream-est-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          submodules: recursive
+      - name: Verify checkout is exactly unmodified upstream master
+        run: |
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)"
+          git log -1 --format='%h %s'
+      - name: Install upstream build prerequisites
+        run: ./ci/github-pre-build.sh
+      - name: Configure and compile native upstream tests
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DOCPN_BUILD_TEST=ON -DOCPN_USE_GL=OFF
+          cmake --build build --target tests -j 2
+      - name: Prove known EST test fails without GNSS patch
+        run: |
+          set +e
+          ./build/test/tests --gtest_filter=DateTimeFormatTest.LocalTimezoneEST > /tmp/baseline-est.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/baseline-est.log
+          if [ "$rc" -eq 0 ]; then
+            echo 'Unexpected baseline PASS: cannot classify EST failure as upstream-only.'
+            exit 1
+          fi
+          grep -F '[  FAILED  ] DateTimeFormatTest.LocalTimezoneEST' /tmp/baseline-est.log
+          echo 'Confirmed: unmodified upstream master reproduces EST failure.'
   upstream-linux-staging:
     runs-on: ubuntu-latest
     timeout-minutes: 55
@@ -33,11 +66,14 @@ jobs:
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DOCPN_BUILD_TEST=ON ${{ matrix.defines }}
       - name: Build full upstream application and targets
         run: cmake --build build --config Release -j 2
-      - name: Run exact upstream run-tests target
+      - name: Run upstream tests excluding separately confirmed EST baseline failure
         working-directory: build
         env:
           CTEST_OUTPUT_ON_FAILURE: 1
-        run: make run-tests
+          GTEST_FILTER: '-DateTimeFormatTest.LocalTimezoneEST'
+        run: |
+          echo 'Excluding one documented upstream regression only; all remaining tests must pass.'
+          make run-tests
       - name: Run focused GNSS native regression in full project
         run: ./build/test/tests --gtest_filter='GNSSValidityResearch.*'
   upstream-clang-format:
